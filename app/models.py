@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey,
+from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Index,
                         Integer, String, Table, Text)
 from sqlalchemy.orm import relationship
 
+from app.crypto.encryption import blind_index, decrypt_field, encrypt_field
 from app.database import Base
 
 # --- Зв'язкові таблиці M:N (RBAC) ---
@@ -25,7 +26,10 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, nullable=False, index=True)
-    email = Column(String(100), unique=True, nullable=False, index=True)
+    # PII зберігається лише як шифротекст Fernet; email_index — HMAC для пошуку/унікальності
+    _encrypted_email = Column("encrypted_email", String(500), nullable=True)
+    email_index = Column(String(64), unique=True, nullable=True, index=True)
+    _encrypted_phone = Column("encrypted_phone", String(500), nullable=True)
     full_name = Column(String(150), nullable=False)
     password_hash = Column(String(255), nullable=False)  # лише bcrypt-хеш!
     is_active = Column(Boolean, default=True)
@@ -36,6 +40,24 @@ class User(Base):
     group = relationship("Group", back_populates="students")
     grades = relationship("Grade", back_populates="student",
                           foreign_keys="Grade.student_id")
+
+    # --- Прозоре шифрування: решта коду працює з user.email як зі звичайним рядком ---
+    @property
+    def email(self) -> str | None:
+        return decrypt_field(self._encrypted_email)
+
+    @email.setter
+    def email(self, value: str | None) -> None:
+        self._encrypted_email = encrypt_field(value)
+        self.email_index = blind_index(value) if value else None
+
+    @property
+    def phone(self) -> str | None:
+        return decrypt_field(self._encrypted_phone)
+
+    @phone.setter
+    def phone(self, value: str | None) -> None:
+        self._encrypted_phone = encrypt_field(value) if value else None
 
     def __repr__(self):
         return f"<User {self.username}>"
