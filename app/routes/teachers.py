@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.audit.logger import get_client_ip, log_data_change
 from app.auth.dependencies import require_role
 from app.database import get_db
 from app.models import Grade, Subject, User
@@ -20,7 +21,7 @@ def student_grades(student_id: int,
 
 
 @router.post("/grades", status_code=status.HTTP_201_CREATED)
-def add_grade(data: GradeCreate,
+def add_grade(request: Request, data: GradeCreate,
               current_user: User = Depends(require_role("teacher", "admin")),
               db: Session = Depends(get_db)):
     if db.get(User, data.student_id) is None or db.get(Subject, data.subject_id) is None:
@@ -32,5 +33,10 @@ def add_grade(data: GradeCreate,
     db.add(grade)
     db.commit()
     db.refresh(grade)
+    log_data_change(db, current_user, get_client_ip(request),
+                    resource=f"grades.id={grade.id}", old=None,
+                    new={"student_id": grade.student_id, "subject_id": grade.subject_id,
+                         "grade": grade.grade},
+                    endpoint="/teachers/grades")
     return {"id": grade.id, "grade": grade.grade, "comment": grade.comment,
             "assigned_by": current_user.username}
