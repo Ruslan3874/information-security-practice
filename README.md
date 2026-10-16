@@ -1,6 +1,6 @@
 # Електронний деканат — захищений REST API
 
-**Заочна практична робота №1** з дисципліни «Безпека інформаційних систем»
+**Заочні практичні роботи №1 і №2** з дисципліни «Безпека інформаційних систем»
 
 | | |
 |---|---|
@@ -16,10 +16,12 @@ REST API системи «Електронний деканат» на **FastAPI
 3. **Автентифікація:** паролі зберігаються лише як bcrypt-хеші (cost 12), сувора Pydantic-валідація.
 4. **Авторизація:** JWT access/refresh токени, ролі перевіряються за даними з БД (401 ≠ 403).
 5. **Веб-рівень:** Security Headers (CSP, HSTS…), CORS allow-list, Rate Limiting, санітизація проти Stored XSS.
+6. **Шифрування даних (ЗПР-2):** email і телефон у БД зашифровано Fernet, пошук через сліпий індекс HMAC, зашифровані бекапи.
+7. **Аудит і hardening (ЗПР-2):** журнал аудиту за 5W, виявлення Brute Force, non-root контейнер із read-only FS, HTTPS через Nginx, сканування Trivy / pip-audit / Bandit.
 
 ## Технології
 
-Python 3.11 · FastAPI 0.111 · SQLAlchemy 2.0 · Alembic 1.13 · Pydantic 2.7 · passlib + bcrypt 4.0.1 · python-jose (HS256) · bleach · slowapi · Docker Compose
+Python 3.11 · FastAPI 0.111 · SQLAlchemy 2.0 · Alembic 1.13 · Pydantic 2.7 · passlib + bcrypt 4.0.1 · python-jose (HS256) · cryptography (Fernet) · bleach · slowapi · Docker Compose · Nginx (TLS 1.2+)
 
 ## Запуск
 
@@ -28,8 +30,11 @@ git clone https://github.com/Ruslan3874/information-security-practice.git
 cd information-security-practice
 
 cp .env.example .env
-# замініть JWT_SECRET_KEY у .env на випадковий ключ: openssl rand -hex 32
+# заповніть .env: JWT_SECRET_KEY — openssl rand -hex 32;
+# ENCRYPTION_KEY і BLIND_INDEX_KEY — python -m scripts.generate_key (або openssl rand -hex 32 для BLIND_INDEX_KEY)
+# Збережіть ключі окремо в менеджері паролів: втрата ENCRYPTION_KEY = втрата всіх email.
 
+./scripts/generate_cert.sh               # self-signed сертифікат для https://localhost
 docker compose up -d --build
 docker compose exec api alembic upgrade head
 docker compose exec api python -m app.seed
@@ -37,10 +42,13 @@ docker compose exec api python -m app.seed
 
 | Адреса | |
 |---|---|
-| API | http://localhost:8000 |
-| Swagger UI | http://localhost:8000/docs |
+| API через Nginx (HTTPS) | https://localhost |
+| Swagger UI | https://localhost/docs |
+| API напряму (лише з цього комп'ютера) | http://127.0.0.1:8000 |
 
-Повне скидання БД: `docker compose down -v`, далі знову три команди вище.
+`http://localhost` перенаправляє на HTTPS (301). Сертифікат self-signed, тому для curl потрібен `-k`.
+
+Повне скидання БД: `docker compose down -v`, далі `docker compose up -d --build`, міграція і seed.
 
 ## Ендпоінти та ролі
 
@@ -56,6 +64,8 @@ docker compose exec api python -m app.seed
 | GET | `/teachers/students/{student_id}/grades` | teacher, admin | |
 | POST | `/teachers/grades` | teacher, admin | оцінка 0–100, коментар санітизується, `assigned_by` = хто виставив |
 | GET | `/admin/users` | admin | |
+| GET | `/admin/audit-log` | admin | журнал аудиту з фільтрами `action`, `username`, `ip`, `status`, `hours` і пагінацією; сам перегляд теж логується |
+| GET | `/admin/security-stats` | admin | лічильники безпекових подій за `hours` (невдалі входи, алерти Brute Force, top IP) |
 
 ### Матриця RBAC (принцип мінімальних привілеїв)
 
@@ -77,7 +87,41 @@ docker compose exec api python -m app.seed
 | `teacher01` | teacher |
 | `student01` | student (група КН-31) |
 
-## Фінальна перевірка
+## Безпека
+
+Повний звіт аудиту безпеки: **[SECURITY_AUDIT.md](SECURITY_AUDIT.md)** — інвентаризація активів, STRIDE, матриця ризиків, знахідки з рекомендаціями, чеклист OWASP Top 10, результати сканування і мінітестів, KPI та план покращень.
+
+Перевірка конфігурації і залежностей перед здачею або деплоєм (exit 1, якщо є FAIL):
+
+```bash
+./scripts/security_check.sh | tee reports/security_check.txt
+```
+
+12 мінітестів на вразливості проти власного стенду:
+
+```bash
+./scripts/pentest_mini.sh | tee reports/pentest_mini.md              # через Nginx
+BASE=http://localhost:8000 ./scripts/pentest_mini.sh                 # напряму в API
+```
+
+Тест Brute Force у `pentest_mini.sh` блокує вхід з вашої IP на 5 хвилин.
+
+| Звіт | Що всередині |
+|---|---|
+| [`reports/security_check.txt`](reports/security_check.txt) | `SECURITY CHECK PASSED` (FAIL 0, WARN 2) |
+| [`reports/pentest_mini.md`](reports/pentest_mini.md) | 12/12 ✅ через Nginx ([напряму](reports/pentest_mini_direct.md) — теж 12/12) |
+| [`reports/trivy.txt`](reports/trivy.txt) | сканування образу (HIGH, CRITICAL) |
+| [`reports/pip-audit.txt`](reports/pip-audit.txt) | вразливості Python-залежностей |
+| [`reports/bandit.txt`](reports/bandit.txt) | SAST коду `app/` — 0 проблем |
+
+Шифрування й бекапи:
+
+```bash
+docker compose exec api python -m scripts.backup_db                       # зашифрований бекап у data/backups/
+docker compose exec api sh -c 'python -m scripts.restore_db $(ls -t data/backups/*.enc | head -1)'   # тестове відновлення
+```
+
+## Фінальна перевірка (ЗПР-1)
 
 Перевірку виконано на чистій БД (`docker compose down -v` → `up -d --build` → міграція → seed) скриптом [`scripts/final_check.sh`](scripts/final_check.sh):
 
@@ -147,15 +191,27 @@ app/
 ├── main.py                  # точка входу, middleware, роутери
 ├── config.py                # SECRET_KEY, терміни дії токенів, CORS
 ├── database.py              # engine, сесія, Base, get_db
-├── models.py                # 6 моделей + 2 зв'язкові таблиці
+├── models.py                # 7 моделей (з AuditLog) + 2 зв'язкові таблиці
 ├── schemas.py               # Pydantic-схеми
 ├── security.py              # bcrypt: hash / verify
 ├── seed.py                  # ролі, дозволи, тестові користувачі
 ├── auth/                    # jwt_handler, dependencies, router
+├── audit/                   # logger, middleware, detector, router (ЗПР-2)
+├── crypto/                  # key_manager, encryption: Fernet і сліпий індекс (ЗПР-2)
 ├── routes/                  # students, teachers, admin
 ├── middleware/              # security_headers, rate_limiter
 └── validators/sanitizer.py  # bleach
-alembic/versions/            # міграція create_all_tables
-scripts/final_check.sh       # 20 сценаріїв фінальної перевірки
+alembic/versions/            # 4 міграції: таблиці, шифрування PII, audit_log
+nginx/nginx.conf             # HTTPS, редирект 80 → 443, limit_req (ЗПР-2)
+scripts/
+├── final_check.sh           # 20 сценаріїв фінальної перевірки (ЗПР-1)
+├── generate_key.py          # ключі ENCRYPTION_KEY і BLIND_INDEX_KEY
+├── migrate_encrypt.py       # шифрування наявних email
+├── backup_db.py / restore_db.py   # зашифрований бекап і тестове відновлення
+├── generate_cert.sh         # self-signed сертифікат
+├── security_check.sh        # перевірка конфігурації і залежностей
+└── pentest_mini.sh          # 12 мінітестів на вразливості
+reports/                     # звіти сканерів і мінітестів
+SECURITY_AUDIT.md            # звіт аудиту безпеки (ЗПР-2)
 docs/screenshots/            # скріншоти для README
 ```

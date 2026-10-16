@@ -1,0 +1,1 @@
+{"period_hours":24,"total_events":89,"failed_logins":14,"access_denied":7,"brute_force_alerts":3,"off_hours_logins":0,"data_changes":1,"server_errors":0,"top_failure_ips":[{"ip":"192.168.97.1","failures":58}]}
