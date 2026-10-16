@@ -12,8 +12,10 @@ mkdir -p reports
 echo "== 1. Секрети =="
 grep -qxE '\.env' .gitignore 2>/dev/null && ok ".env у .gitignore" || fail ".env відсутній у .gitignore"
 git ls-files --error-unmatch .env >/dev/null 2>&1 && fail ".env відстежується Git!" || ok ".env не в Git"
-# *.example містять лише заглушки (replace-me-…) — без виключення це хибне спрацювання
-if git log --all -p -- . ':(exclude)*.example' 2>/dev/null | grep -qE '^\+.*(ENCRYPTION_KEY|BLIND_INDEX_KEY|JWT_SECRET_KEY)=[A-Za-z0-9_=-]{20,}'; then
+# Заглушку з .env.example ЗПР-1 (replace-me-with-64-hex-chars) не вважаємо секретом — інакше хибне спрацювання
+PLACEHOLDER='=replace-me-with-64-hex-chars'
+if git log --all -p 2>/dev/null | grep -E '^\+.*(ENCRYPTION_KEY|BLIND_INDEX_KEY|JWT_SECRET_KEY)=[A-Za-z0-9_=-]{20,}' \
+     | grep -vqF -- "$PLACEHOLDER"; then
   fail "секрет в історії Git — ротуйте ключі!"
 else ok "секретів в історії Git не знайдено"; fi
 if grep -rnE 'getenv\("[A-Z_]*(SECRET|KEY|PASSWORD)[A-Z_]*", *"[^"]{8,}"' app/ --include='*.py'; then
